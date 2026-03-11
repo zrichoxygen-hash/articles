@@ -106,7 +106,7 @@ HTML_FORM = '''
             <textarea name="prompt" id="prompt" required>{{ prompt or '' }}</textarea><br>
             <label>Joindre des fichiers (PDF, DOCX, TXT, etc.) :</label><br>
             <div style="position:relative;">
-                <input type="file" id="documents" multiple style="opacity:0;position:absolute;left:0;top:0;width:100%;height:40px;z-index:2;cursor:pointer;">
+                <input type="file" id="documents" name="documents" multiple style="opacity:0;position:absolute;left:0;top:0;width:100%;height:40px;z-index:2;cursor:pointer;">
                 <button type="button" id="customUploadBtn" class="btn-main" style="width:100%;margin-bottom:10px;z-index:1;position:relative;">Sélectionner des fichiers</button>
             </div>
             <div class="file-list" id="fileList"></div>
@@ -454,7 +454,6 @@ def publish_wordpress():
             f"{wp_url}/wp-json/wp/v2/posts",
             json=payload,
             headers=headers,
-            auth=(wp_user, wp_password),
             timeout=15
         )
         if resp.status_code in (200, 201):
@@ -484,8 +483,11 @@ def publish_wordpress():
                     HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
                     html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
                     wp_message=(
-                        f'Erreur REST 401 puis échec fallback XML-RPC: {xmlrpc_exc}. '
-                        'Vérifie les mots de passe d\'application et la sécurité serveur.'
+                        f'Erreur WordPress 401 (non autorisé). '
+                        'Vérifiez que WP_APP_PASSWORD est bien un Mot de passe d\'application WordPress '
+                        '(Tableau de bord WP → Utilisateurs → Votre profil → Mots de passe d\'application). '
+                        'N\'utilisez pas votre mot de passe de connexion habituel. '
+                        f'Détail XML-RPC fallback : {xmlrpc_exc}'
                     ),
                     wp_success=False
                 )
@@ -527,7 +529,6 @@ def test_wordpress():
         resp = requests.get(
             f"{wp_url}/wp-json/wp/v2/users/me",
             headers=headers,
-            auth=(wp_user, wp_password),
             timeout=12
         )
         if resp.status_code == 200:
@@ -547,9 +548,16 @@ def test_wordpress():
                 )
                 success = True
             else:
+                hint = ''
+                if resp.status_code == 401:
+                    hint = (
+                        ' | Conseil : utilisez un Mot de passe d\'application WordPress '
+                        '(Tableau de bord WP → Utilisateurs → Votre profil → Mots de passe d\'application) '
+                        'pour WP_APP_PASSWORD, pas votre mot de passe de connexion habituel.'
+                    )
                 message = (
                     f'Échec connexion REST ({resp.status_code}): {resp.text[:220]} | '
-                    f'Échec XML-RPC: {xml_err}'
+                    f'Échec XML-RPC: {xml_err}{hint}'
                 )
                 success = False
     except Exception as e:
