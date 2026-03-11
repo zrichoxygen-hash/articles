@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: articles-flask
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn webapp:app
+    plan: free

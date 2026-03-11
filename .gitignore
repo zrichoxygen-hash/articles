@@ -1,0 +1,26 @@
+# Environnement
+.env
+API.env
+*.pyc
+__pycache__/
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/cache/
+
+# Fichiers résultats
+upload_results.txt
+evaluations*.xlsx
+evaluations_results.xlsx
+
+# Python
+venv/
+.venv
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
