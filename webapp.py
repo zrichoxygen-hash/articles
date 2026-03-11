@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import base64
+import xmlrpc.client
 
 from flask import session, redirect, url_for, flash
 app = Flask(__name__)
@@ -29,6 +30,32 @@ def get_wp_auth():
     wp_user = os.environ.get('WP_USERNAME', '')
     wp_password = os.environ.get('WP_APP_PASSWORD', '')
     return wp_url, wp_user, wp_password
+
+
+def normalize_wp_app_password(password: str) -> str:
+    # WordPress accepte le mot de passe d'application avec ou sans espaces.
+    return (password or '').replace(' ', '').strip()
+
+
+def try_wp_xmlrpc_login(wp_url: str, wp_user: str, wp_password: str):
+    try:
+        server = xmlrpc.client.ServerProxy(f"{wp_url}/xmlrpc.php")
+        blogs = server.wp.getUsersBlogs(wp_user, wp_password)
+        return True, blogs, None
+    except Exception as exc:
+        return False, None, exc
+
+
+def publish_wp_xmlrpc(wp_url: str, wp_user: str, wp_password: str, title: str, html_output: str, status: str):
+    server = xmlrpc.client.ServerProxy(f"{wp_url}/xmlrpc.php")
+    content = {
+        'post_type': 'post',
+        'post_status': status,
+        'post_title': title,
+        'post_content': html_output,
+    }
+    post_id = server.wp.newPost(1, wp_user, wp_password, content)
+    return post_id
 
 LOGIN_FORM = '''
 <!DOCTYPE html>
@@ -401,6 +428,7 @@ def publish_wordpress():
         title = 'Article généré par IA'
 
     wp_url, wp_user, wp_password = get_wp_auth()
+    wp_password = normalize_wp_app_password(wp_password)
 
     if not wp_url or not wp_user or not wp_password:
         return render_template_string(
@@ -410,7 +438,11 @@ def publish_wordpress():
         )
 
     credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
-    headers = {'Authorization': f'Basic {credentials}', 'Content-Type': 'application/json'}
+    headers = {
+        'Authorization': f'Basic {credentials}',
+        'Content-Type': 'application/json',
+        'User-Agent': 'ArticlesFlask/1.0',
+    }
     payload = {'title': title, 'content': html_output, 'status': status}
     if wp_categories:
         payload['categories'] = wp_categories
@@ -418,7 +450,13 @@ def publish_wordpress():
         payload['tags'] = wp_tags
 
     try:
-        resp = requests.post(f"{wp_url}/wp-json/wp/v2/posts", json=payload, headers=headers, timeout=15)
+        resp = requests.post(
+            f"{wp_url}/wp-json/wp/v2/posts",
+            json=payload,
+            headers=headers,
+            auth=(wp_user, wp_password),
+            timeout=15
+        )
         if resp.status_code in (200, 201):
             post_url = resp.json().get('link', '')
             msg = f'Article inséré avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
@@ -427,6 +465,30 @@ def publish_wordpress():
                 html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
                 wp_message=msg, wp_success=True
             )
+        if resp.status_code == 401:
+            # Fallback utile quand l'hébergeur bloque le header Authorization pour la REST API.
+            try:
+                post_id = publish_wp_xmlrpc(wp_url, wp_user, wp_password, title, html_output, status)
+                post_url = f"{wp_url}/?p={post_id}"
+                msg = (
+                    f'Article inséré avec succès via XML-RPC (fallback). '
+                    f'<a href="{post_url}" target="_blank">Voir l\'article</a>'
+                )
+                return render_template_string(
+                    HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+                    html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+                    wp_message=msg, wp_success=True
+                )
+            except Exception as xmlrpc_exc:
+                return render_template_string(
+                    HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+                    html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+                    wp_message=(
+                        f'Erreur REST 401 puis échec fallback XML-RPC: {xmlrpc_exc}. '
+                        'Vérifie les mots de passe d\'application et la sécurité serveur.'
+                    ),
+                    wp_success=False
+                )
         else:
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
@@ -450,6 +512,7 @@ def test_wordpress():
     redesign_prompt = request.form.get('redesign_prompt', '')
 
     wp_url, wp_user, wp_password = get_wp_auth()
+    wp_password = normalize_wp_app_password(wp_password)
     if not wp_url or not wp_user or not wp_password:
         return render_template_string(
             HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
@@ -458,17 +521,37 @@ def test_wordpress():
         )
 
     credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
-    headers = {'Authorization': f'Basic {credentials}'}
+    headers = {'Authorization': f'Basic {credentials}', 'User-Agent': 'ArticlesFlask/1.0'}
 
     try:
-        resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me", headers=headers, timeout=12)
+        resp = requests.get(
+            f"{wp_url}/wp-json/wp/v2/users/me",
+            headers=headers,
+            auth=(wp_user, wp_password),
+            timeout=12
+        )
         if resp.status_code == 200:
             user_name = resp.json().get('name') or wp_user
             message = f'Connexion WordPress OK. Utilisateur authentifié: {user_name}.'
             success = True
         else:
-            message = f'Échec connexion WordPress ({resp.status_code}): {resp.text[:300]}'
-            success = False
+            xml_ok, blogs, xml_err = try_wp_xmlrpc_login(wp_url, wp_user, wp_password)
+            if xml_ok:
+                blog_name = ''
+                if isinstance(blogs, list) and blogs:
+                    blog_name = blogs[0].get('blogName', '') or blogs[0].get('url', '')
+                message = (
+                    f'Connexion REST en échec ({resp.status_code}), mais XML-RPC est OK. '
+                    f'Site: {blog_name or wp_url}. '
+                    'L\'insertion utilisera automatiquement le fallback XML-RPC si nécessaire.'
+                )
+                success = True
+            else:
+                message = (
+                    f'Échec connexion REST ({resp.status_code}): {resp.text[:220]} | '
+                    f'Échec XML-RPC: {xml_err}'
+                )
+                success = False
     except Exception as e:
         message = f'Erreur de connexion WordPress: {e}'
         success = False

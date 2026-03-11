@@ -114,6 +114,7 @@ Notes importantes :
 - Le statut envoyé peut être `draft` (brouillon) ou `publish`.
 - Dans le formulaire, vous pouvez renseigner les catégories et tags WordPress via leurs IDs (ex: `2,5`).
 - Un bouton `Tester la connexion WordPress` vérifie l'authentification avant insertion.
+- En cas de `401` REST (souvent header `Authorization` filtré), l'application tente automatiquement un fallback XML-RPC (`/xmlrpc.php`).
 
 ## Structure du Projet
 
