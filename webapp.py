@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import base64
+import html
 
 from flask import session, redirect, url_for, flash
 app = Flask(__name__)
@@ -29,6 +30,31 @@ def get_wp_auth():
     wp_user = os.environ.get('WP_USERNAME', '')
     wp_password = os.environ.get('WP_APP_PASSWORD', '')
     return wp_url, wp_user, wp_password
+
+
+def build_wp_error_message(resp: requests.Response) -> str:
+    """Construit un message d'erreur WordPress lisible et actionnable."""
+    default = f"Erreur WordPress ({resp.status_code}): {resp.text[:300]}"
+    try:
+        data = resp.json()
+    except Exception:
+        return default
+
+    code = data.get('code', '')
+    message = data.get('message', '')
+    status = (data.get('data') or {}).get('status', resp.status_code)
+
+    if code == 'rest_cannot_create' and status in (401, 403):
+        return (
+            "WordPress refuse la création d'article (rest_cannot_create). "
+            "L'utilisateur authentifié n'a pas le droit de créer des posts. "
+            "Vérifiez que WP_USERNAME a le rôle Auteur/Éditeur/Administrateur, "
+            "que le mot de passe d'application est bien créé pour CE même utilisateur, "
+            "et que les extensions de sécurité ne bloquent pas l'API REST. "
+            f"Réponse WP: {html.escape(str(message))}"
+        )
+
+    return f"Erreur WordPress ({status}) [{html.escape(str(code))}]: {html.escape(str(message))}"
 
 LOGIN_FORM = '''
 <!DOCTYPE html>
@@ -446,7 +472,7 @@ def publish_wordpress():
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
                 html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
-                wp_message=f'Erreur WordPress ({resp.status_code}): {resp.text[:300]}', wp_success=False
+                wp_message=build_wp_error_message(resp), wp_success=False
             )
     except Exception as e:
         return render_template_string(
@@ -476,13 +502,19 @@ def test_wordpress():
     headers = {'Authorization': f'Basic {credentials}'}
 
     try:
-        resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me", headers=headers, timeout=12)
+        resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me?context=edit", headers=headers, timeout=12)
         if resp.status_code == 200:
-            user_name = resp.json().get('name') or wp_user
-            message = f'Connexion WordPress OK. Utilisateur authentifié: {user_name}.'
+            user_data = resp.json()
+            user_name = user_data.get('name') or wp_user
+            roles = ', '.join(user_data.get('roles', [])) or 'inconnu'
+            message = (
+                f'Connexion WordPress OK. Utilisateur authentifié: {user_name}. '
+                f'Rôles détectés: {roles}. '
+                "Si l'insertion échoue avec rest_cannot_create, ce compte n'a pas la capacité de créer des posts."
+            )
             success = True
         else:
-            message = f'Échec connexion WordPress ({resp.status_code}): {resp.text[:300]}'
+            message = build_wp_error_message(resp)
             success = False
     except Exception as e:
         message = f'Erreur de connexion WordPress: {e}'

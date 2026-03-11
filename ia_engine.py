@@ -12,8 +12,16 @@ load_dotenv("API.env", override=False)
 
 
 def _get_api_key() -> str | None:
-    # Priorité au nom standard, puis compat rétro avec l'ancien nom.
-    return os.getenv("OPENAI_API_KEY") or os.getenv("OpenAI_API_KEY")
+    # Cherche les deux variantes de nom, nettoie, puis retient une clé plausible.
+    candidates = [
+        (os.getenv("OPENAI_API_KEY") or "").strip(),
+        (os.getenv("OpenAI_API_KEY") or "").strip(),
+    ]
+    for key in candidates:
+        # Les clés OpenAI valides commencent par "sk-".
+        if key.startswith("sk-"):
+            return key
+    return None
 
 
 def generer_article(idees: str, prompt: str) -> str:
@@ -23,7 +31,10 @@ def generer_article(idees: str, prompt: str) -> str:
     try:
         api_key = _get_api_key()
         if not api_key:
-            return "[ERREUR IA] Clé API manquante. Définis OPENAI_API_KEY dans l'environnement Render."
+            return (
+                "[ERREUR IA] Clé API absente ou invalide. "
+                "Définis OPENAI_API_KEY avec une valeur commençant par sk-."
+            )
 
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         client = OpenAI(api_key=api_key)
@@ -42,8 +53,11 @@ def generer_article(idees: str, prompt: str) -> str:
         if not content:
             return "[ERREUR IA] Réponse vide du modèle. Vérifie OPENAI_MODEL et les quotas API."
         return content
-    except Exception as e:
-        return f"[ERREUR IA] {e}"
+    except Exception:
+        return (
+            "[ERREUR IA] Appel OpenAI en échec. "
+            "Vérifie OPENAI_API_KEY, OPENAI_MODEL et les quotas API."
+        )
 
 
 if __name__ == "__main__":
