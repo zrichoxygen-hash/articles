@@ -1,4 +1,5 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session
+import html as html_module
 import os
 import tempfile
 from ia_engine import generer_article
@@ -29,6 +30,37 @@ def get_wp_auth():
     wp_user = os.environ.get('WP_USERNAME', '')
     wp_password = os.environ.get('WP_APP_PASSWORD', '')
     return wp_url, wp_user, wp_password
+
+
+def _wp_error_message(status_code: int, response_text: str) -> str:
+    """Return a human-friendly, actionable error message for WordPress REST API errors."""
+    if status_code == 401:
+        return (
+            "Erreur WordPress (401) – Authentification refusée.<br><br>"
+            "<strong>Comment générer un Mot de passe d'application WordPress :</strong><br>"
+            "1. Connectez-vous à votre tableau de bord WordPress (<code>/wp-admin</code>).<br>"
+            "2. Allez dans <strong>Utilisateurs → Votre profil</strong>.<br>"
+            "3. Faites défiler jusqu'à la section <strong>Mots de passe d'application</strong>.<br>"
+            "4. Dans le champ <em>Nom du nouveau mot de passe d'application</em>, saisissez par exemple <code>AppArticles</code> et cliquez sur <strong>Ajouter le nouveau mot de passe d'application</strong>.<br>"
+            "5. Copiez immédiatement le mot de passe affiché (il ne sera plus visible ensuite).<br>"
+            "6. Dans Render, mettez à jour la variable d'environnement <code>WP_APP_PASSWORD</code> avec ce mot de passe "
+            "(format : <code>xxxx xxxx xxxx xxxx xxxx xxxx</code>).<br>"
+            "7. Vérifiez que <code>WP_USERNAME</code> correspond exactement à votre identifiant WordPress (pas votre e-mail).<br><br>"
+            "<em>Note : Si la section 'Mots de passe d'application' n'apparaît pas, l'extension "
+            "<strong>Application Passwords</strong> doit être activée ou votre hébergeur (ex. Hostinger) "
+            "doit autoriser la REST API WordPress.</em>"
+        )
+    if status_code == 403:
+        return (
+            "Erreur WordPress (403) – Permission refusée.<br><br>"
+            "Votre utilisateur est authentifié mais n'a pas le droit de créer des articles.<br>"
+            "<strong>Solutions :</strong><br>"
+            "1. Vérifiez que <code>WP_USERNAME</code> correspond à un compte avec le rôle <strong>Administrateur</strong> ou <strong>Éditeur</strong>.<br>"
+            "2. Dans WordPress, allez dans <strong>Utilisateurs → Tous les utilisateurs</strong>, "
+            "cliquez sur votre nom et vérifiez votre rôle.<br>"
+            f"<br><em>Détail WordPress : {html_module.escape(response_text[:200])}</em>"
+        )
+    return f"Erreur WordPress ({status_code}): {html_module.escape(response_text[:300])}"
 
 LOGIN_FORM = '''
 <!DOCTYPE html>
@@ -202,7 +234,7 @@ HTML_FORM = '''
                 <input type="hidden" name="redesign_prompt" value="{{ redesign_prompt or '' }}">
                 <button type="submit" class="btn-main">Tester la connexion WordPress</button>
             </form>
-            {% if wp_message %}<div style="margin-top:10px;padding:10px;border-radius:6px;background:{% if wp_success %}#d4edda{% else %}#f8d7da{% endif %};color:{% if wp_success %}#155724{% else %}#721c24{% endif %};">{{ wp_message }}</div>{% endif %}
+            {% if wp_message %}<div style="margin-top:10px;padding:10px;border-radius:6px;background:{% if wp_success %}#d4edda{% else %}#f8d7da{% endif %};color:{% if wp_success %}#155724{% else %}#721c24{% endif %};">{{ wp_message|safe }}</div>{% endif %}
             <h2>Instructions de modification du design/layout :</h2>
             <form method="post">
                 <input type="hidden" name="ideas" value="{{ ideas }}">
@@ -420,7 +452,7 @@ def publish_wordpress():
     try:
         resp = requests.post(f"{wp_url}/wp-json/wp/v2/posts", json=payload, headers=headers, timeout=15)
         if resp.status_code in (200, 201):
-            post_url = resp.json().get('link', '')
+            post_url = html_module.escape(resp.json().get('link', ''))
             msg = f'Article inséré avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
@@ -431,7 +463,7 @@ def publish_wordpress():
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
                 html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
-                wp_message=f'Erreur WordPress ({resp.status_code}): {resp.text[:300]}', wp_success=False
+                wp_message=_wp_error_message(resp.status_code, resp.text), wp_success=False
             )
     except Exception as e:
         return render_template_string(
@@ -463,11 +495,17 @@ def test_wordpress():
     try:
         resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me", headers=headers, timeout=12)
         if resp.status_code == 200:
-            user_name = resp.json().get('name') or wp_user
-            message = f'Connexion WordPress OK. Utilisateur authentifié: {user_name}.'
+            data = resp.json()
+            user_name = html_module.escape(data.get('name') or wp_user)
+            roles = data.get('roles', [])
+            roles_str = html_module.escape(', '.join(roles) if roles else 'inconnu')
+            message = (
+                f"Connexion WordPress OK. Utilisateur authentifié : <strong>{user_name}</strong> "
+                f"(rôle(s) : {roles_str})."
+            )
             success = True
         else:
-            message = f'Échec connexion WordPress ({resp.status_code}): {resp.text[:300]}'
+            message = _wp_error_message(resp.status_code, resp.text)
             success = False
     except Exception as e:
         message = f'Erreur de connexion WordPress: {e}'
