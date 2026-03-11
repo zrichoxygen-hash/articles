@@ -8,7 +8,6 @@ import pptx
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import base64
 import html
 
 from flask import session, redirect, url_for, flash
@@ -26,10 +25,34 @@ def parse_id_list(raw_value: str) -> list[int]:
 
 
 def get_wp_auth():
-    wp_url = os.environ.get('WP_URL', '').rstrip('/')
-    wp_user = os.environ.get('WP_USERNAME', '')
-    wp_password = os.environ.get('WP_APP_PASSWORD', '')
+    wp_url = os.environ.get('WP_URL', '').strip().rstrip('/')
+    wp_user = os.environ.get('WP_USERNAME', '').strip()
+    wp_password = os.environ.get('WP_APP_PASSWORD', '').strip()
     return wp_url, wp_user, wp_password
+
+
+def _wp_auth_variants(wp_user: str, wp_password: str) -> list[tuple[str, str]]:
+    """Retourne des variantes d'auth pour gérer les app passwords copiés avec espaces."""
+    variants: list[tuple[str, str]] = []
+    first = (wp_user, wp_password)
+    variants.append(first)
+
+    compact_password = ''.join(wp_password.split())
+    compact = (wp_user, compact_password)
+    if compact_password and compact != first:
+        variants.append(compact)
+    return variants
+
+
+def wp_request(method: str, url: str, wp_user: str, wp_password: str, **kwargs) -> requests.Response:
+    """Fait une requête WP avec retry auto sur variante sans espaces du mot de passe."""
+    last_resp = None
+    for auth_user, auth_password in _wp_auth_variants(wp_user, wp_password):
+        resp = requests.request(method, url, auth=(auth_user, auth_password), **kwargs)
+        last_resp = resp
+        if resp.status_code != 401:
+            return resp
+    return last_resp
 
 
 def get_wp_post_type() -> str:
@@ -59,6 +82,16 @@ def build_wp_error_message(resp: requests.Response) -> str:
             "Vérifiez que WP_USERNAME a le rôle Auteur/Éditeur/Administrateur, "
             "que le mot de passe d'application est bien créé pour CE même utilisateur, "
             "et que les extensions de sécurité ne bloquent pas l'API REST. "
+            f"Réponse WP: {html.escape(str(message))}"
+        )
+
+    if code == 'rest_not_logged_in' and status == 401:
+        return (
+            "WordPress ne reçoit pas une authentification valide (rest_not_logged_in). "
+            "Vérifiez WP_USERNAME/WP_APP_PASSWORD (sans guillemets), "
+            "puis côté hébergeur autorisez le header Authorization pour l'API REST. "
+            "Sur Apache/LiteSpeed, ajoutez dans .htaccess: "
+            "RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}] "
             f"Réponse WP: {html.escape(str(message))}"
         )
 
@@ -459,8 +492,7 @@ def publish_wordpress():
             wp_message='Variables WP_URL, WP_USERNAME ou WP_APP_PASSWORD manquantes dans Render Environment.', wp_success=False
         )
 
-    credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
-    headers = {'Authorization': f'Basic {credentials}', 'Content-Type': 'application/json'}
+    headers = {'Content-Type': 'application/json'}
     payload = {'title': title, 'content': html_output, 'status': status}
     if wp_categories:
         payload['categories'] = wp_categories
@@ -468,7 +500,7 @@ def publish_wordpress():
         payload['tags'] = wp_tags
 
     try:
-        resp = requests.post(f"{wp_url}/wp-json/wp/v2/{post_type}", json=payload, headers=headers, timeout=15)
+        resp = wp_request('POST', f"{wp_url}/wp-json/wp/v2/{post_type}", wp_user, wp_password, json=payload, headers=headers, timeout=15)
         if resp.status_code in (200, 201):
             post_url = resp.json().get('link', '')
             msg = f'Article inséré avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
@@ -508,11 +540,8 @@ def test_wordpress():
             wp_message='Variables WP_URL, WP_USERNAME ou WP_APP_PASSWORD manquantes dans Render Environment.', wp_success=False
         )
 
-    credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
-    headers = {'Authorization': f'Basic {credentials}'}
-
     try:
-        resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me?context=edit", headers=headers, timeout=12)
+        resp = wp_request('GET', f"{wp_url}/wp-json/wp/v2/users/me?context=edit", wp_user, wp_password, timeout=12)
         if resp.status_code == 200:
             user_data = resp.json()
             user_name = user_data.get('name') or wp_user
