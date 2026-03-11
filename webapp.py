@@ -62,9 +62,29 @@ def get_wp_post_type() -> str:
     return safe or 'posts'
 
 
+def _wp_body_snippet(resp: requests.Response, limit: int = 500) -> str:
+    raw = (resp.text or '').strip()
+    if not raw:
+        return 'réponse vide'
+    if len(raw) > limit:
+        raw = raw[:limit] + '...'
+    return html.escape(raw)
+
+
 def build_wp_error_message(resp: requests.Response) -> str:
     """Construit un message d'erreur WordPress lisible et actionnable."""
-    default = f"Erreur WordPress ({resp.status_code}): {resp.text[:300]}"
+    default = f"Erreur WordPress ({resp.status_code}) sur {html.escape(resp.url)}: {_wp_body_snippet(resp)}"
+
+    if resp.status_code >= 500:
+        server = html.escape(resp.headers.get('server', 'inconnu'))
+        return (
+            f"Erreur WordPress ({resp.status_code}) sur {html.escape(resp.url)}. "
+            "Le serveur WordPress a planté avant de répondre correctement à l'API REST. "
+            "Causes fréquentes: .htaccess invalide, plugin sécurité/cache, erreur PHP. "
+            f"Serveur détecté: {server}. "
+            f"Extrait réponse: {_wp_body_snippet(resp)}"
+        )
+
     try:
         data = resp.json()
     except Exception:
@@ -541,6 +561,20 @@ def test_wordpress():
         )
 
     try:
+        preflight = requests.get(f"{wp_url}/wp-json/", timeout=12)
+        if preflight.status_code >= 500:
+            message = (
+                "Le endpoint public /wp-json renvoie déjà une erreur serveur. "
+                + build_wp_error_message(preflight)
+                + " Vérifiez les logs PHP/Apache et testez temporairement sans plugins de sécurité/cache."
+            )
+            success = False
+            return render_template_string(
+                HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+                html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+                wp_message=message, wp_success=success
+            )
+
         resp = wp_request('GET', f"{wp_url}/wp-json/wp/v2/users/me?context=edit", wp_user, wp_password, timeout=12)
         if resp.status_code == 200:
             user_data = resp.json()
