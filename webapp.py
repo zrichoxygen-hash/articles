@@ -32,6 +32,13 @@ def get_wp_auth():
     return wp_url, wp_user, wp_password
 
 
+def get_wp_post_type() -> str:
+    raw = (os.environ.get('WP_POST_TYPE', 'posts') or 'posts').strip().lower()
+    # Autorise seulement les caractères valides d'un slug WP REST.
+    safe = ''.join(ch for ch in raw if ch.isalnum() or ch in ('-', '_'))
+    return safe or 'posts'
+
+
 def build_wp_error_message(resp: requests.Response) -> str:
     """Construit un message d'erreur WordPress lisible et actionnable."""
     default = f"Erreur WordPress ({resp.status_code}): {resp.text[:300]}"
@@ -45,9 +52,10 @@ def build_wp_error_message(resp: requests.Response) -> str:
     status = (data.get('data') or {}).get('status', resp.status_code)
 
     if code == 'rest_cannot_create' and status in (401, 403):
+        post_type = get_wp_post_type()
         return (
             "WordPress refuse la création d'article (rest_cannot_create). "
-            "L'utilisateur authentifié n'a pas le droit de créer des posts. "
+            f"L'utilisateur authentifié n'a pas le droit de créer des contenus de type '{post_type}'. "
             "Vérifiez que WP_USERNAME a le rôle Auteur/Éditeur/Administrateur, "
             "que le mot de passe d'application est bien créé pour CE même utilisateur, "
             "et que les extensions de sécurité ne bloquent pas l'API REST. "
@@ -442,6 +450,7 @@ def publish_wordpress():
         title = 'Article généré par IA'
 
     wp_url, wp_user, wp_password = get_wp_auth()
+    post_type = get_wp_post_type()
 
     if not wp_url or not wp_user or not wp_password:
         return render_template_string(
@@ -459,7 +468,7 @@ def publish_wordpress():
         payload['tags'] = wp_tags
 
     try:
-        resp = requests.post(f"{wp_url}/wp-json/wp/v2/posts", json=payload, headers=headers, timeout=15)
+        resp = requests.post(f"{wp_url}/wp-json/wp/v2/{post_type}", json=payload, headers=headers, timeout=15)
         if resp.status_code in (200, 201):
             post_url = resp.json().get('link', '')
             msg = f'Article inséré avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
@@ -491,6 +500,7 @@ def test_wordpress():
     redesign_prompt = request.form.get('redesign_prompt', '')
 
     wp_url, wp_user, wp_password = get_wp_auth()
+    post_type = get_wp_post_type()
     if not wp_url or not wp_user or not wp_password:
         return render_template_string(
             HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
@@ -510,7 +520,8 @@ def test_wordpress():
             message = (
                 f'Connexion WordPress OK. Utilisateur authentifié: {user_name}. '
                 f'Rôles détectés: {roles}. '
-                "Si l'insertion échoue avec rest_cannot_create, ce compte n'a pas la capacité de créer des posts."
+                f"Type de contenu ciblé: {post_type}. "
+                "Si l'insertion échoue avec rest_cannot_create, ce compte n'a pas la capacité de créer ce type de contenu."
             )
             success = True
         else:

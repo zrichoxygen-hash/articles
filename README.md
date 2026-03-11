@@ -106,11 +106,13 @@ Variables d'environnement à configurer :
 WP_URL=https://votre-site.com
 WP_USERNAME=votre_login_wp
 WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+WP_POST_TYPE=posts
 ```
 
 Notes importantes :
 - `WP_APP_PASSWORD` est un mot de passe d'application WordPress (pas votre mot de passe principal).
-- L'URL utilisée est automatiquement `WP_URL/wp-json/wp/v2/posts`.
+- `WP_POST_TYPE` définit le type de contenu ciblé via l'API REST (`posts` par défaut, ou `docs` pour votre CPT).
+- L'URL utilisée est automatiquement `WP_URL/wp-json/wp/v2/{WP_POST_TYPE}`.
 - Le statut envoyé peut être `draft` (brouillon) ou `publish`.
 - Dans le formulaire, vous pouvez renseigner les catégories et tags WordPress via leurs IDs (ex: `2,5`).
 - Un bouton `Tester la connexion WordPress` vérifie l'authentification avant insertion.
