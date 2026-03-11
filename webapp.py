@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import base64
+from markupsafe import escape
 
 from flask import session, redirect, url_for, flash
 app = Flask(__name__)
@@ -29,6 +30,27 @@ def get_wp_auth():
     wp_user = os.environ.get('WP_USERNAME', '')
     wp_password = os.environ.get('WP_APP_PASSWORD', '')
     return wp_url, wp_user, wp_password
+
+
+def wp_error_message(status_code: int, response_text: str) -> str:
+    """Return a user-friendly error message for WordPress API errors."""
+    hint_401 = (
+        " <b>Cause probable :</b> Le mot de passe d'application est invalide ou absent. "
+        "Allez dans WordPress &gt; Utilisateurs &gt; Votre profil &gt; <b>Mots de passe d'application</b>, "
+        "générez un nouveau mot de passe et mettez-le dans la variable <b>WP_APP_PASSWORD</b> sur Render. "
+        "Assurez-vous également que <b>WP_USERNAME</b> correspond exactement à votre identifiant WordPress."
+    )
+    hint_403 = (
+        " <b>Cause probable :</b> Votre compte WordPress n'a pas la permission de créer des articles via l'API. "
+        "Vérifiez que votre rôle est <b>Administrateur</b> ou <b>Éditeur</b> dans WordPress &gt; Utilisateurs."
+    )
+    safe_text = str(escape(response_text[:200]))
+    base = f"Erreur WordPress ({status_code}): {safe_text}"
+    if status_code == 401:
+        return base + hint_401
+    if status_code == 403:
+        return base + hint_403
+    return base
 
 LOGIN_FORM = '''
 <!DOCTYPE html>
@@ -190,6 +212,29 @@ HTML_FORM = '''
             <h2>HTML à copier pour WordPress :</h2>
             <textarea readonly style="width:100%;height:200px;">{{ html_output }}</textarea>
             <h2>Insérer dans WordPress :</h2>
+            <details style="margin-bottom:12px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px;">
+                <summary style="cursor:pointer;font-weight:bold;color:#b45309;">⚙️ Configuration requise (cliquer pour voir)</summary>
+                <div style="margin-top:8px;font-size:0.95em;color:#333;">
+                    <p>Pour connecter l'application à WordPress, définissez ces 3 variables d'environnement dans <b>Render</b> :</p>
+                    <ul>
+                        <li><b>WP_URL</b> : URL de votre site WordPress (ex: <code>https://monsite.com</code>)</li>
+                        <li><b>WP_USERNAME</b> : Votre nom d'utilisateur WordPress (admin)</li>
+                        <li><b>WP_APP_PASSWORD</b> : Mot de passe d'application WordPress (voir ci-dessous)</li>
+                    </ul>
+                    <p><b>Comment créer un mot de passe d'application WordPress :</b></p>
+                    <ol>
+                        <li>Connectez-vous à votre tableau de bord WordPress</li>
+                        <li>Allez dans <b>Utilisateurs &gt; Votre profil</b></li>
+                        <li>Faites défiler jusqu'à la section <b>Mots de passe d'application</b></li>
+                        <li>Entrez un nom (ex: "API Render"), cliquez sur <b>Ajouter le mot de passe d'application</b></li>
+                        <li>Copiez le mot de passe généré et collez-le dans <b>WP_APP_PASSWORD</b> sur Render</li>
+                    </ol>
+                    <p style="color:#721c24;"><b>Note Hostinger :</b> Si la section "Mots de passe d'application"
+                    n'apparaît pas, activez-la via <b>Extensions &gt; Ajouter</b> en cherchant
+                    "Application Passwords" ou vérifiez que WordPress 5.6+ est installé.
+                    Si le problème persiste, contactez le support Hostinger pour activer l'API REST.</p>
+                </div>
+            </details>
             <form method="post" action="/publish_wordpress">
                 <textarea name="html_output" style="display:none;">{{ html_output }}</textarea>
                 <input type="hidden" name="ideas" value="{{ ideas or '' }}">
@@ -211,7 +256,7 @@ HTML_FORM = '''
                 <input type="hidden" name="redesign_prompt" value="{{ redesign_prompt or '' }}">
                 <button type="submit" class="btn-main">Tester la connexion WordPress</button>
             </form>
-            {% if wp_message %}<div style="margin-top:10px;padding:10px;border-radius:6px;background:{% if wp_success %}#d4edda{% else %}#f8d7da{% endif %};color:{% if wp_success %}#155724{% else %}#721c24{% endif %};">{{ wp_message }}</div>{% endif %}
+            {% if wp_message %}<div style="margin-top:10px;padding:10px;border-radius:6px;background:{% if wp_success %}#d4edda{% else %}#f8d7da{% endif %};color:{% if wp_success %}#155724{% else %}#721c24{% endif %};">{{ wp_message|safe }}</div>{% endif %}
             <h2>Instructions de modification du design/layout :</h2>
             <form method="post">
                 <input type="hidden" name="ideas" value="{{ ideas }}">
@@ -446,7 +491,7 @@ def publish_wordpress():
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
                 html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
-                wp_message=f'Erreur WordPress ({resp.status_code}): {resp.text[:300]}', wp_success=False
+                wp_message=wp_error_message(resp.status_code, resp.text), wp_success=False
             )
     except Exception as e:
         return render_template_string(
@@ -482,7 +527,7 @@ def test_wordpress():
             message = f'Connexion WordPress OK. Utilisateur authentifié: {user_name}.'
             success = True
         else:
-            message = f'Échec connexion WordPress ({resp.status_code}): {resp.text[:300]}'
+            message = wp_error_message(resp.status_code, resp.text)
             success = False
     except Exception as e:
         message = f'Erreur de connexion WordPress: {e}'
