@@ -96,6 +96,25 @@ OPENAI_API_KEY=votre_clé_ici
 2. Menu (≡) → "Settings"
 3. "Secrets" → Ajoutez `OPENAI_API_KEY`
 
+## Insertion automatique sur WordPress
+
+L'application Flask (`webapp.py`) peut créer l'article directement sur WordPress via l'API REST quand vous cliquez sur le bouton **Insérer**.
+
+Variables d'environnement à configurer :
+
+```env
+WP_URL=https://votre-site.com
+WP_USERNAME=votre_login_wp
+WP_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+```
+
+Notes importantes :
+- `WP_APP_PASSWORD` est un mot de passe d'application WordPress (pas votre mot de passe principal).
+- L'URL utilisée est automatiquement `WP_URL/wp-json/wp/v2/posts`.
+- Le statut envoyé peut être `draft` (brouillon) ou `publish`.
+- Dans le formulaire, vous pouvez renseigner les catégories et tags WordPress via leurs IDs (ex: `2,5`).
+- Un bouton `Tester la connexion WordPress` vérifie l'authentification avant insertion.
+
 ## Structure du Projet
 
 ```

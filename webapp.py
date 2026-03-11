@@ -14,6 +14,22 @@ from flask import session, redirect, url_for, flash
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key')  # À personnaliser en prod
 
+
+def parse_id_list(raw_value: str) -> list[int]:
+    ids = []
+    for token in (raw_value or '').replace(';', ',').split(','):
+        cleaned = token.strip()
+        if cleaned.isdigit():
+            ids.append(int(cleaned))
+    return ids
+
+
+def get_wp_auth():
+    wp_url = os.environ.get('WP_URL', '').rstrip('/')
+    wp_user = os.environ.get('WP_USERNAME', '')
+    wp_password = os.environ.get('WP_APP_PASSWORD', '')
+    return wp_url, wp_user, wp_password
+
 LOGIN_FORM = '''
 <!DOCTYPE html>
 <html lang="fr">
@@ -164,15 +180,27 @@ HTML_FORM = '''
             </div>
             <h2>HTML à copier pour WordPress :</h2>
             <textarea readonly style="width:100%;height:200px;">{{ html_output }}</textarea>
-            <h2>Publier sur WordPress :</h2>
+            <h2>Insérer dans WordPress :</h2>
             <form method="post" action="/publish_wordpress">
-                <input type="hidden" name="html_output" value="{{ html_output|e }}">
-                <input type="text" name="wp_title" placeholder="Titre de l'article" required style="width:100%;padding:8px;margin-bottom:8px;border-radius:6px;border:1px solid #bbb;">
+                <textarea name="html_output" style="display:none;">{{ html_output }}</textarea>
+                <input type="hidden" name="ideas" value="{{ ideas or '' }}">
+                <input type="hidden" name="prompt" value="{{ prompt or '' }}">
+                <input type="hidden" name="redesign_prompt" value="{{ redesign_prompt or '' }}">
+                <input type="text" name="wp_title" placeholder="Titre de l'article" value="{{ ideas or '' }}" required style="width:100%;padding:8px;margin-bottom:8px;border-radius:6px;border:1px solid #bbb;">
+                <input type="text" name="wp_categories" placeholder="Catégories WordPress (IDs, ex: 2,5)" style="width:100%;padding:8px;margin-bottom:8px;border-radius:6px;border:1px solid #bbb;">
+                <input type="text" name="wp_tags" placeholder="Tags WordPress (IDs, ex: 12,18)" style="width:100%;padding:8px;margin-bottom:8px;border-radius:6px;border:1px solid #bbb;">
                 <select name="wp_status" style="padding:8px;margin-bottom:8px;border-radius:6px;border:1px solid #bbb;">
                     <option value="draft">Brouillon</option>
                     <option value="publish">Publier directement</option>
                 </select>
-                <button type="submit" class="btn-main" style="margin-left:10px;">Publier sur WordPress</button>
+                <button type="submit" class="btn-main" style="margin-left:10px;">Insérer</button>
+            </form>
+            <form method="post" action="/test_wordpress" style="margin-top:8px;">
+                <textarea name="html_output" style="display:none;">{{ html_output }}</textarea>
+                <input type="hidden" name="ideas" value="{{ ideas or '' }}">
+                <input type="hidden" name="prompt" value="{{ prompt or '' }}">
+                <input type="hidden" name="redesign_prompt" value="{{ redesign_prompt or '' }}">
+                <button type="submit" class="btn-main">Tester la connexion WordPress</button>
             </form>
             {% if wp_message %}<div style="margin-top:10px;padding:10px;border-radius:6px;background:{% if wp_success %}#d4edda{% else %}#f8d7da{% endif %};color:{% if wp_success %}#155724{% else %}#721c24{% endif %};">{{ wp_message }}</div>{% endif %}
             <h2>Instructions de modification du design/layout :</h2>
@@ -354,46 +382,102 @@ def index():
 @login_required
 def publish_wordpress():
     html_output = request.form.get('html_output', '')
-    title = request.form.get('wp_title', 'Article généré par IA')
+    title = request.form.get('wp_title', 'Article généré par IA').strip()
     status = request.form.get('wp_status', 'draft')
+    wp_categories = parse_id_list(request.form.get('wp_categories', ''))
+    wp_tags = parse_id_list(request.form.get('wp_tags', ''))
+    ideas = request.form.get('ideas', '')
+    prompt = request.form.get('prompt', '')
+    redesign_prompt = request.form.get('redesign_prompt', '')
 
-    wp_url = os.environ.get('WP_URL', '').rstrip('/')
-    wp_user = os.environ.get('WP_USERNAME', '')
-    wp_password = os.environ.get('WP_APP_PASSWORD', '')
+    if not html_output.strip():
+        return render_template_string(
+            HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+            html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+            wp_message='Aucun contenu HTML à insérer dans WordPress.', wp_success=False
+        )
+
+    if not title:
+        title = 'Article généré par IA'
+
+    wp_url, wp_user, wp_password = get_wp_auth()
 
     if not wp_url or not wp_user or not wp_password:
         return render_template_string(
             HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
-            html_output=html_output, ideas='', prompt='', redesign_prompt='', feedback_links='',
+            html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
             wp_message='Variables WP_URL, WP_USERNAME ou WP_APP_PASSWORD manquantes dans Render Environment.', wp_success=False
         )
 
     credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
     headers = {'Authorization': f'Basic {credentials}', 'Content-Type': 'application/json'}
     payload = {'title': title, 'content': html_output, 'status': status}
+    if wp_categories:
+        payload['categories'] = wp_categories
+    if wp_tags:
+        payload['tags'] = wp_tags
 
     try:
         resp = requests.post(f"{wp_url}/wp-json/wp/v2/posts", json=payload, headers=headers, timeout=15)
         if resp.status_code in (200, 201):
             post_url = resp.json().get('link', '')
-            msg = f'Article publié avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
+            msg = f'Article inséré avec succès ! <a href="{post_url}" target="_blank">Voir l\'article</a>'
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
-                html_output=html_output, ideas='', prompt='', redesign_prompt='', feedback_links='',
+                html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
                 wp_message=msg, wp_success=True
             )
         else:
             return render_template_string(
                 HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
-                html_output=html_output, ideas='', prompt='', redesign_prompt='', feedback_links='',
+                html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
                 wp_message=f'Erreur WordPress ({resp.status_code}): {resp.text[:300]}', wp_success=False
             )
     except Exception as e:
         return render_template_string(
             HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
-            html_output=html_output, ideas='', prompt='', redesign_prompt='', feedback_links='',
+            html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
             wp_message=f'Erreur de connexion WordPress: {e}', wp_success=False
         )
+
+
+@app.route('/test_wordpress', methods=['POST'])
+@login_required
+def test_wordpress():
+    html_output = request.form.get('html_output', '')
+    ideas = request.form.get('ideas', '')
+    prompt = request.form.get('prompt', '')
+    redesign_prompt = request.form.get('redesign_prompt', '')
+
+    wp_url, wp_user, wp_password = get_wp_auth()
+    if not wp_url or not wp_user or not wp_password:
+        return render_template_string(
+            HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+            html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+            wp_message='Variables WP_URL, WP_USERNAME ou WP_APP_PASSWORD manquantes dans Render Environment.', wp_success=False
+        )
+
+    credentials = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
+    headers = {'Authorization': f'Basic {credentials}'}
+
+    try:
+        resp = requests.get(f"{wp_url}/wp-json/wp/v2/users/me", headers=headers, timeout=12)
+        if resp.status_code == 200:
+            user_name = resp.json().get('name') or wp_user
+            message = f'Connexion WordPress OK. Utilisateur authentifié: {user_name}.'
+            success = True
+        else:
+            message = f'Échec connexion WordPress ({resp.status_code}): {resp.text[:300]}'
+            success = False
+    except Exception as e:
+        message = f'Erreur de connexion WordPress: {e}'
+        success = False
+
+    return render_template_string(
+        HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
+        html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links='',
+        wp_message=message, wp_success=success
+    )
 
 
 if __name__ == '__main__':
