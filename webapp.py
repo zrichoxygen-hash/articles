@@ -79,7 +79,7 @@ HTML_FORM = '''
             <textarea name="prompt" id="prompt" required>{{ prompt or '' }}</textarea><br>
             <label>Joindre des fichiers (PDF, DOCX, TXT, etc.) :</label><br>
             <div style="position:relative;">
-                <input type="file" id="documents" multiple style="opacity:0;position:absolute;left:0;top:0;width:100%;height:40px;z-index:2;cursor:pointer;">
+                <input type="file" id="documents" name="documents" multiple style="opacity:0;position:absolute;left:0;top:0;width:100%;height:40px;z-index:2;cursor:pointer;">
                 <button type="button" id="customUploadBtn" class="btn-main" style="width:100%;margin-bottom:10px;z-index:1;position:relative;">Sélectionner des fichiers</button>
             </div>
             <div class="file-list" id="fileList"></div>
@@ -147,12 +147,16 @@ HTML_FORM = '''
         }
 
         // Avant soumission, reconstruire l'objet FileList à partir de filesArray
-        document.getElementById('mainForm').addEventListener('submit', function(e) {
-            if (fileInput.files.length !== filesArray.length) {
-                // On doit reconstruire un DataTransfer
-                const dt = new DataTransfer();
-                filesArray.forEach(f => dt.items.add(f));
-                fileInput.files = dt.files;
+        document.getElementById('mainForm').addEventListener('submit', function() {
+            try {
+                if (fileInput.files.length !== filesArray.length && typeof DataTransfer !== 'undefined') {
+                    // Reconstruit les fichiers sans bloquer la soumission si le navigateur ne supporte pas DataTransfer.
+                    const dt = new DataTransfer();
+                    filesArray.forEach(f => dt.items.add(f));
+                    fileInput.files = dt.files;
+                }
+            } catch (err) {
+                console.warn('Soumission sans synchronisation filesArray:', err);
             }
         });
         // Affichage initial
@@ -170,6 +174,11 @@ HTML_FORM = '''
                     {{ line|safe }}<br>
                 {% endif %}
             {% endfor %}
+        </div>
+        {% endif %}
+        {% if generation_error %}
+        <div style="margin:10px 0;padding:10px;border-radius:6px;background:#f8d7da;color:#721c24;">
+            {{ generation_error }}
         </div>
         {% endif %}
         {% if html_output %}
@@ -270,112 +279,118 @@ def index():
     links_content = ''
     links_extracted_text = ''
     feedback_links = ''
+    generation_error = ''
     if request.method == 'POST':
-        # Récupérer les fichiers joints
-        if 'documents' in request.files:
-            files = request.files.getlist('documents')
-            for file in files:
-                if file.filename:
+        try:
+            # Récupérer les fichiers joints
+            if 'documents' in request.files:
+                files = request.files.getlist('documents')
+                for file in files:
+                    if file.filename:
 
-                    ext = os.path.splitext(file.filename)[1].lower()
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                        file.save(tmp.name)
-                        tmp.seek(0)
-                        if ext == '.txt':
-                            documents_content += tmp.read().decode('utf-8', errors='ignore') + '\n'
-                        elif ext == '.pdf':
-                            try:
-                                tmp.close()  # Fermer avant lecture externe
-                                reader = PyPDF2.PdfReader(tmp.name)
-                                for page in reader.pages:
-                                    documents_content += page.extract_text() + '\n'
-                            except Exception as e:
-                                documents_content += f"[Erreur PDF: {e}]\n"
-                        elif ext == '.docx':
-                            try:
+                        ext = os.path.splitext(file.filename)[1].lower()
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                            file.save(tmp.name)
+                            tmp.seek(0)
+                            if ext == '.txt':
+                                documents_content += tmp.read().decode('utf-8', errors='ignore') + '\n'
+                            elif ext == '.pdf':
+                                try:
+                                    tmp.close()  # Fermer avant lecture externe
+                                    reader = PyPDF2.PdfReader(tmp.name)
+                                    for page in reader.pages:
+                                        documents_content += page.extract_text() + '\n'
+                                except Exception as e:
+                                    documents_content += f"[Erreur PDF: {e}]\n"
+                            elif ext == '.docx':
+                                try:
+                                    tmp.close()
+                                    doc = docx.Document(tmp.name)
+                                    for para in doc.paragraphs:
+                                        documents_content += para.text + '\n'
+                                except Exception as e:
+                                    documents_content += f"[Erreur DOCX: {e}]\n"
+                            elif ext == '.pptx':
+                                try:
+                                    tmp.close()
+                                    pres = pptx.Presentation(tmp.name)
+                                    for slide in pres.slides:
+                                        for shape in slide.shapes:
+                                            if hasattr(shape, "text"):
+                                                documents_content += shape.text + '\n'
+                                except Exception as e:
+                                    documents_content += f"[Erreur PPTX: {e}]\n"
+                            elif ext in ['.xlsx', '.csv']:
+                                try:
+                                    tmp.close()
+                                    if ext == '.csv':
+                                        df = pd.read_csv(tmp.name)
+                                    else:
+                                        df = pd.read_excel(tmp.name)
+                                    documents_content += df.to_string(index=False) + '\n'
+                                except Exception as e:
+                                    documents_content += f"[Erreur tableur: {e}]\n"
+                            else:
                                 tmp.close()
-                                doc = docx.Document(tmp.name)
-                                for para in doc.paragraphs:
-                                    documents_content += para.text + '\n'
-                            except Exception as e:
-                                documents_content += f"[Erreur DOCX: {e}]\n"
-                        elif ext == '.pptx':
-                            try:
-                                tmp.close()
-                                pres = pptx.Presentation(tmp.name)
-                                for slide in pres.slides:
-                                    for shape in slide.shapes:
-                                        if hasattr(shape, "text"):
-                                            documents_content += shape.text + '\n'
-                            except Exception as e:
-                                documents_content += f"[Erreur PPTX: {e}]\n"
-                        elif ext in ['.xlsx', '.csv']:
-                            try:
-                                tmp.close()
-                                if ext == '.csv':
-                                    df = pd.read_csv(tmp.name)
-                                else:
-                                    df = pd.read_excel(tmp.name)
-                                documents_content += df.to_string(index=False) + '\n'
-                            except Exception as e:
-                                documents_content += f"[Erreur tableur: {e}]\n"
-                        else:
-                            tmp.close()
-                        os.unlink(tmp.name)
-        # Récupérer les liens web et extraire leur contenu
-        links = request.form.get('links', '').strip()
-        if links:
-            links_content = links
-            for link in links.splitlines():
-                url = link.strip()
-                if url:
-                    try:
-                        resp = requests.get(url, timeout=8)
-                        resp.raise_for_status()
-                        soup = BeautifulSoup(resp.text, 'html.parser')
-                        for script in soup(['script', 'style', 'noscript']):
-                            script.decompose()
-                        text = soup.get_text(separator=' ', strip=True)
-                        text = ' '.join(text.split())
-                        links_extracted_text += f"\n[Contenu extrait de {url}]:\n{text[:3000]}\n"
-                        feedback_links += f"<b>Succès extraction :</b> {url}<br>"
-                    except Exception as e:
-                        links_extracted_text += f"\n[Erreur lors de l'extraction de {url}: {e}]\n"
-                        feedback_links += f"<b>Échec extraction :</b> {url} <span style='color:red;'>({e})</span><br>"
-        # Si on demande un redesign
-        if request.form.get('action') == 'redesign':
-            redesign_prompt = request.form['redesign_prompt']
-            html_output_old = request.form['html_output']
-            ideas = request.form['ideas']
-            prompt = request.form['prompt']
-            redesign_full_prompt = (
-                f"Voici un article HTML :\n{html_output_old}\n\n{redesign_prompt} "
-                "Rends le HTML prêt pour WordPress, professionnel, académique, accessible, structuré, sans balises <html> ou <body>."
-            )
-            html_output = generer_article(ideas, redesign_full_prompt)
-        else:
-            ideas = request.form['ideas']
-            prompt = request.form['prompt']
-            redesign_prompt = ''
-            # Combine tout pour le prompt IA
-            prompt_html = prompt
-            if documents_content:
-                prompt_html += f"\n\nVoici le contenu de documents joints :\n{documents_content}"
-            if links_content:
-                prompt_html += f"\n\nVoici des liens à prendre en compte :\n{links_content}"
-            if links_extracted_text:
-                prompt_html += f"\n\nVoici le contenu extrait des liens web fournis :\n{links_extracted_text}"
-            prompt_html += (
-                "\n\nGénère un article au format HTML prêt à être inséré dans WordPress, avec : "
-                "<h2> pour les titres principaux, <h3> pour les sous-titres, <p> pour les paragraphes, <ul> pour les listes, <blockquote> pour les citations. "
-                "Commence par une introduction claire, structure l'article avec des titres explicites, des paragraphes courts, des exemples concrets, des citations si pertinent, et termine par une conclusion synthétique. "
-                "Le style doit être professionnel, académique, intelligent mais accessible à tous. N'utilise pas de balises <html> ou <body>."
-            )
-            html_output = generer_article(ideas, prompt_html)
+                            os.unlink(tmp.name)
+
+            # Récupérer les liens web et extraire leur contenu
+            links = request.form.get('links', '').strip()
+            if links:
+                links_content = links
+                for link in links.splitlines():
+                    url = link.strip()
+                    if url:
+                        try:
+                            resp = requests.get(url, timeout=8)
+                            resp.raise_for_status()
+                            soup = BeautifulSoup(resp.text, 'html.parser')
+                            for script in soup(['script', 'style', 'noscript']):
+                                script.decompose()
+                            text = soup.get_text(separator=' ', strip=True)
+                            text = ' '.join(text.split())
+                            links_extracted_text += f"\n[Contenu extrait de {url}]:\n{text[:3000]}\n"
+                            feedback_links += f"<b>Succès extraction :</b> {url}<br>"
+                        except Exception as e:
+                            links_extracted_text += f"\n[Erreur lors de l'extraction de {url}: {e}]\n"
+                            feedback_links += f"<b>Échec extraction :</b> {url} <span style='color:red;'>({e})</span><br>"
+
+            # Si on demande un redesign
+            if request.form.get('action') == 'redesign':
+                redesign_prompt = request.form['redesign_prompt']
+                html_output_old = request.form['html_output']
+                ideas = request.form['ideas']
+                prompt = request.form['prompt']
+                redesign_full_prompt = (
+                    f"Voici un article HTML :\n{html_output_old}\n\n{redesign_prompt} "
+                    "Rends le HTML prêt pour WordPress, professionnel, académique, accessible, structuré, sans balises <html> ou <body>."
+                )
+                html_output = generer_article(ideas, redesign_full_prompt)
+            else:
+                ideas = request.form['ideas']
+                prompt = request.form['prompt']
+                redesign_prompt = ''
+                # Combine tout pour le prompt IA
+                prompt_html = prompt
+                if documents_content:
+                    prompt_html += f"\n\nVoici le contenu de documents joints :\n{documents_content}"
+                if links_content:
+                    prompt_html += f"\n\nVoici des liens à prendre en compte :\n{links_content}"
+                if links_extracted_text:
+                    prompt_html += f"\n\nVoici le contenu extrait des liens web fournis :\n{links_extracted_text}"
+                prompt_html += (
+                    "\n\nGénère un article au format HTML prêt à être inséré dans WordPress, avec : "
+                    "<h2> pour les titres principaux, <h3> pour les sous-titres, <p> pour les paragraphes, <ul> pour les listes, <blockquote> pour les citations. "
+                    "Commence par une introduction claire, structure l'article avec des titres explicites, des paragraphes courts, des exemples concrets, des citations si pertinent, et termine par une conclusion synthétique. "
+                    "Le style doit être professionnel, académique, intelligent mais accessible à tous. N'utilise pas de balises <html> ou <body>."
+                )
+                html_output = generer_article(ideas, prompt_html)
+        except Exception as e:
+            generation_error = f"Erreur pendant la génération: {e}"
     return render_template_string(
         HTML_FORM + '<br><br><a href="/logout">Se déconnecter</a>',
         html_output=html_output, ideas=ideas, prompt=prompt, redesign_prompt=redesign_prompt, feedback_links=feedback_links,
-        wp_message=None, wp_success=False
+        wp_message=None, wp_success=False, generation_error=generation_error
     )
 
 @app.route('/publish_wordpress', methods=['POST'])
